@@ -28,6 +28,20 @@ CloudFormation {
 
   %w(CIDRPrefix SubnetMask).each { |parameter| Parameter(parameter) { Type 'String' } }
 
+  %w[SingleNatGW DynamoEndpoint S3Endpoint].each do |condition|
+    Parameter(condition) {
+      Type 'String'
+      AllowedValues %w[on off]
+      Default 'off'
+    }
+
+    Condition(condition, FnEquals(Ref(condition), 'on'))
+  end
+
+  Condition('MultipleNatGW', FnEquals(Ref('SingleNatGW'), 'off'))
+
+  Condition('Production', FnEquals(Ref('Environment'), 'production'))
+
   Resource('VPC') {
     Type 'AWS::EC2::VPC'
     Property('CidrBlock', FnJoin('', [Ref('CIDRPrefix'), '.0.0/16']))
@@ -74,6 +88,7 @@ CloudFormation {
 
   availability_zones.each do |az|
     Resource("EIPNat#{az}") {
+      Condition 'MultipleNatGW'
       DependsOn ['GWAttachmentIGW']
       Type 'AWS::EC2::EIP'
       Property('Domain', 'vpc')
@@ -83,10 +98,25 @@ CloudFormation {
   availability_zones.each do |az|
     Resource("NatGateway#{az}") {
       Type 'AWS::EC2::NatGateway'
-      Property('AllocationId', FnGetAtt("EIPNat#{az}",'AllocationId'))
+      Condition 'MultipleNatGW'
+      Property('AllocationId', FnGetAtt("EIPNat#{az}", 'AllocationId'))
       Property('SubnetId', Ref("SubnetPublic#{az}"))
     }
   end
+
+  Resource('EIPNat') {
+    Condition 'SingleNatGW'
+    Type 'AWS::EC2::EIP'
+    Property('Domain', 'vpc')
+  }
+
+  Resource('NatGateway') {
+    DependsOn 'AttachGateway'
+    Condition 'SingleNatGW'
+    Type 'AWS::EC2::NatGateway'
+    Property('AllocationId', FnGetAtt('EIPNat', 'AllocationId'))
+    Property('SubnetId', Ref("SubnetPublic#{availability_zones[0]}"))
+  }
 
   Resource('GWAttachmentIGW') {
     DependsOn ['IGW']
@@ -105,11 +135,23 @@ CloudFormation {
 
   availability_zones.each do |az|
     Resource("RoutePrivateNatGateway#{az}") {
+      Condition 'MultipleNatGW'
       DependsOn ["NatGateway#{az}"]
       Type 'AWS::EC2::Route'
       Property('RouteTableId', Ref("RouteTablePrivate#{az}"))
       Property('DestinationCidrBlock', '0.0.0.0/0')
       Property('NatGatewayId', Ref("NatGateway#{az}"))
+    }
+  end
+
+  availability_zones.each do |az|
+    Resource("RoutePrivateSingleNatGateway#{az}") {
+      Condition 'SingleNatGW'
+      DependsOn ["NatGateway#{az}"]
+      Type 'AWS::EC2::Route'
+      Property('RouteTableId', Ref("RouteTablePrivate#{az}"))
+      Property('DestinationCidrBlock', '0.0.0.0/0')
+      Property('NatGatewayId', Ref('NatGateway'))
     }
   end
 
